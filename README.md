@@ -31,7 +31,7 @@ We combined train and test datasets by rbind() function to manipulate data clean
 
 After data preprocessing, the number of numeric variables was increased from 37 to 56. We used cor() function to calculate the correlation between predictor variables and sale price, and selected only high correlation (correlation > 0.5). From figure 2.2, we see that 16 predictor variables were selected and would be used for modeling in next section.
 
-## Data Collection
+## 3. Data Collection
 
 Two datasets
 
@@ -39,7 +39,7 @@ The training set: a subset to train a model. The test set: a subset to test a tr
 
 Datasets are collected from [Kaggle](https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques/overview/description)
 
-## Data Preprocessing
+## 4. Data Preprocessing
 
 ### Data Integration
 
@@ -49,22 +49,22 @@ rbind( ) function to combine train and test datasets by rows.
 
 is.na( ) to identify columns that have NAs. Replace it with number zero or text none
 
-## Data Transformation
+## 5. Data Transformation
 
 Convert character variables into ordinal integers  using revalue( ) function if there is clear ordinality. Otherwise, convert them into factor
 
-## Feature Selection
+## 6. Feature Selection
 
 Most people are willing to spend 200,000 for housing. Only small proportion of consumers can afford expensive houses in Ames. 
 
 Select only high correlation with Sale Price (correlation > 0.5) 
 
-## Modeling
+## 7. Modeling
 Multiple Linear Regression, CART, Random Forest
 
-## Result & Evaluation
+## 8. Result & Evaluation
 
-## References
+## 9. References
 
 [https://www.washingtonpost.com/business/2021/12/23/suburbs-still-hotter-than-cities-home-buyers](https://www.washingtonpost.com/business/2021/12/23/suburbs-still-hotter-than-cities-home-buyers)
 
