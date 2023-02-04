@@ -68,8 +68,6 @@ Multiple Linear Regression, CART, Random Forest
 
 [https://www.washingtonpost.com/business/2021/12/23/suburbs-still-hotter-than-cities-home-buyers](https://www.washingtonpost.com/business/2021/12/23/suburbs-still-hotter-than-cities-home-buyers)
 
-[https://www.zillow.com/research/data/](https://www.zillow.com/research/data/)
-
 [https://www.kaggle.com/code/bluedreamv1b3/house-price/notebook](https://www.kaggle.com/code/bluedreamv1b3/house-price/notebook)
 
 [https://www.kaggle.com/code/erikbruin/house-prices-lasso-xgboost-and-a-detailed-eda](https://www.kaggle.com/code/erikbruin/house-prices-lasso-xgboost-and-a-detailed-eda)
