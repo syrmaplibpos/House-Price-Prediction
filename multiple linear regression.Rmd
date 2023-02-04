@@ -1,0 +1,129 @@
+---
+title: "multiple linear regression"
+author: "Gen Li"
+date: "2022-12-18"
+output: html_document
+---
+
+```{r}
+
+library(Metrics)
+library(tidyverse)
+
+
+```
+
+```{r}
+# Linear Regression
+# c("SalePrice","OverallQual","GrLivArea","GarageCars","GarageArea","TotalBsmtSF","X1stFlrSF","FullBath","TotRmsAbvGrd","YearBuilt","YearRemodAdd") will be used in linear regression.
+names(model_train)
+summary(model_train)
+
+# partition data
+# divide datasets into two parts -- training and validation, to prepare for prediction later
+set.seed(10000)
+train.index <- sample(c(1:dim(model_train)[1]), dim(model_train)[1]*0.8)
+model_train2 = model_train[train.index,]
+model_valid <- model_train[-train.index,]
+
+Regression = lm(SalePrice ~ ., data = model_train2)
+ summary(Regression)
+ 
+```
+
+```{r}
+# Run the linear regression model without TotRmsAbvGrd, GarageArea,X1stFlrSF   
+
+ Regression = lm(SalePrice ~ .-TotRmsAbvGrd - TotalBsmtSF - GarageArea- GarageFinish -YearRemodAdd , data = model_train2)
+ summary(Regression)
+ 
+ plot(Regression)
+```
+```{r}
+pred <- predict(Regression,model_valid,type='response')
+# see error metrics 
+rmse(model_valid$SalePrice, pred)
+
+residuals <- model_valid$SalePrice - pred
+reg_pred <- data.frame("Predicted" = pred, "Actual" = model_valid$SalePrice, "Residual" = residuals)
+
+accuracy(pred, model_valid$SalePrice)
+accuracy(log(pred), log(model_valid$SalePrice))
+```
+
+```{r}
+ggplot(data = reg_pred, aes(x = Actual, y = Predicted), color = "blue") + 
+  geom_point(col='#3c696f',size = 2 ) +
+  geom_abline(size=3,alpha = 0.2)+
+  theme_classic()
+
+ggplot(data = reg_pred, aes(x = Predicted, y = Residual)) +
+  geom_pointrange(aes(ymin = 0, ymax = Residual), color = "blue", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = 3, color = "red") +
+  ggtitle("Residuals vs. Linear model prediction")
+
+```
+
+```{r}
+
+qqnorm(model_train2$SalePrice)
+qqline(model_train2$SalePrice)
+qqnorm(log(model_train2$SalePrice))
+qqline(log(model_train2$SalePrice))
+```
+
+```{r}
+# partition data
+# divide datasets into two parts -- training and validation, to prepare for prediction later
+set.seed(10000)
+train.index <- sample(c(1:dim(model_train)[1]), dim(model_train)[1]*0.8)
+model_train2 = model_train[train.index,]
+model_valid <- model_train[-train.index,]
+
+
+RegressionL = lm(log(SalePrice) ~ ., data = model_train2)
+ summary(RegressionL)
+
+# Run the linear regression model without TotRmsAbvGrd, GarageArea,X1stFlrSF   
+ RegressionL = lm(log(SalePrice) ~ . -TotRmsAbvGrd - GarageArea - X1stFlrSF   , data = model_train2)
+ summary(RegressionL)
+ 
+ plot(RegressionL)
+
+predL <- exp(predict(RegressionL,model_valid,type='response'))
+# see error metrics 
+rmse(model_valid$SalePrice, predL)
+
+residualsL <- model_valid$SalePrice - predL
+reg_predL <- data.frame("PredictedL" = predL, "Actual" = model_valid$SalePrice, "ResidualL" = residualsL)
+
+accuracy(predL, model_valid$SalePrice)
+accuracy(log(predL), log(model_valid$SalePrice))
+
+reg<- reg_pred %>% left_join(reg_predL, by = 'Actual')
+
+ggplot(data = reg) + 
+  geom_point(aes(x = Actual, y = PredictedL), col='#3c696f',size = 3 ) +
+  geom_point(aes(x = Actual, y = Predicted), col = "#c2c2ff",size = 3) +
+  geom_abline(size=3,alpha = 0.2)+ 
+  theme_classic()+
+  xlim(0,450000)+
+  ylim(0,450000)+theme(aspect.ratio=1)
+
+legend_colors <- c("linear" = "#c2c2ff", "Log linear" = "#3c696f")
+
+ggplot(data = reg) +
+  geom_pointrange(aes(x = Predicted, y = Residual, ymin = 0, ymax = Residual), color = "#c2c2ff", alpha = 0.7) +
+  geom_pointrange(aes(x = PredictedL, y = Residual, ymin = 0, ymax = Residual), color = "#3c696f", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = 3, color = "red") +
+  ggtitle("Residuals vs. Linear model prediction")+
+  theme_classic()+
+  guides(color=guide_legend(ncol=2))
+
+
+# model_test$ModelPred <- exp(predict(RegressionL,model_test,type='response'))
+
+
+
+
+```

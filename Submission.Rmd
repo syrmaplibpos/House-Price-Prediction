@@ -1,0 +1,801 @@
+---
+title: "Kaggle_Submission"
+author: "Zhichun Li, Gen Li, Lingyun Ding"
+date: "2022-12-18"
+output: html_document
+---
+
+```{r}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+library(rpart)
+library(rpart.plot)
+library(purrr)
+library(knitr)
+library(purrr)
+library(forecast)
+library(rsample)
+library(gbm)
+library(h2o)
+library(vip)
+library(pdp)
+library(e1071)
+library(rminer)
+library(Metrics)
+library(tidyverse)
+
+```
+
+
+```{r}
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+
+# Remove the Id column from both test and train datasets
+test$Id <- NULL
+train$Id <- NULL
+
+# Create a SalePrice column into the test dataset with value NA
+test$SalePrice <- NA
+
+# Combine train and test datasets by rows
+all <- rbind(train, test)
+dim(all)
+```
+
+```{r}
+# Return column names and its corresponding index numbers if there are missing values
+NAcolumn <- which(colSums(is.na(all)) > 0)
+
+# arrange the columns in descending order
+NAcolumn_desc <- sort(colSums(sapply(all[NAcolumn], is.na)), decreasing = TRUE)
+
+
+```
+
+```{r}
+# Visualize the target variable SalePrice 
+ggplot(all, aes(x = SalePrice)) +
+  geom_histogram(fill = "#7d926e", color="#e9ecef",
+                 alpha = 0.9) +
+  theme_classic() + xlab("Sale Price") + ylab("Count")
+  scale_x_continuous(breaks = seq(0, 800000, by = 100000 ))
+
+```
+
+```{r}
+# extract numeric variables 
+numeric_variable <- dplyr::select_if(all, is.numeric)
+
+# Store the numeric column names in a vector. It will be used later on
+numeric_veriable_names <- colnames(numeric_variable)
+
+length(numeric_variable)
+```
+
+```{r}
+# pairwise.complete.obs uses the non-NA values when calculating the correlation
+correlation_numeric_variable <- cor(numeric_variable, use = "pairwise.complete.obs")
+
+# arrange correlations with SalePrice in descending order 
+corr_sorted <- as.matrix(sort(correlation_numeric_variable[, 'SalePrice'], decreasing = TRUE))
+
+#select only high correlations with SalePrice(correlation > 0.5)
+corr_high <- names(which(apply(corr_sorted, 1, function(x) abs(x) > 0.5)))
+
+# keep top 10 correlation numeric variables
+correlation_numeric_variable <- correlation_numeric_variable[corr_high, corr_high]
+
+# create correlogram
+# https://stackoverflow.com/questions/43220298/how-do-i-change-the-color-font-type-and-size-of-a-corrplot
+# https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+corrplot(correlation_numeric_variable, method = 'circle', tl.col = "black", 
+         col=colorRampPalette(c("white","#ced3cd", "#3c696f"))(100),
+         cl.lim=c(0,1), tl.cex=0.8)
+
+```
+
+```{r}
+# Overall quality has the highest correlation with SalePrice
+ggplot(all[!is.na(all$SalePrice),], aes(factor(OverallQual), SalePrice)) +
+  geom_boxplot(col = "#7d926e") +
+  theme_classic() + xlab("Overall Quality") + ylab("Sale Price")
+  scale_y_continuous(breaks= seq(0, 800000, by=100000))
+```
+
+```{r}
+# GrLivArea has the second highest correlation with SalePrice
+ggplot(all[!is.na(all$SalePrice), ], aes(x = GrLivArea, y = SalePrice)) +
+  geom_point(col="#7d926e") + 
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  theme_classic() + xlab("Ground Living Area") + ylab("Sale Price") +
+  scale_y_continuous(breaks = seq(0, 800000, by = 100000)) +
+  geom_text_repel(aes(label = 
+                        ifelse(all$GrLivArea[!is.na(all$SalePrice)] > 4500, 
+                               rownames(all), '')))
+```
+
+```{r}
+# Among 10 numeric variables above, the following three variables have NAs. We need to remove NAs before proceeding to the next step.  
+NAcolumn["GarageCars"]
+NAcolumn["GarageArea"]
+NAcolumn["TotalBsmtSF"]
+
+# according to the previous chart, the following two rows are ourliers which need to be removed later on  
+all[c(524, 1299), c("SalePrice", "OverallQual", "GrLivArea")]
+
+```
+
+```{r}
+NAcolumn["GarageCars"]
+NAcolumn["GarageArea"]
+NAcolumn["TotalBsmtSF"]
+
+# GarageCars: convert NAs into 0
+all$GarageCars[is.na(all$GarageCars)] <- 0
+# Validation
+all %>% filter(is.na(GarageCars))
+
+# GarageArea: convert NAs into 0
+all$GarageArea[is.na(all$GarageArea)] <- 0
+# Validation
+all %>% filter(is.na(GarageArea))
+
+# TotalBsmtSF: convert NAs into 0
+all$TotalBsmtSF[is.na(all$TotalBsmtSF)] <- 0
+# Validation
+all %>% filter(is.na(TotalBsmtSF))
+```
+
+```{r}
+# since PoolQC variable is categorical, we convert missing values into text "None"
+all$PoolQC[is.na(all$PoolQC)] <- "None"
+unique(all$PoolQC)
+
+# We can label this variable as ordinal since it values use the quality levels.
+Qualities <- c("None" = 0, "Fa" = 1, "TA" = 2, "Gd" = 3, "Ex" = 4)
+# Use revalue to replace the quality levels with the ordinal numbers above
+all$PoolQC <- as.integer(revalue(all$PoolQC, Qualities))
+table(all$PoolQC)
+```
+
+```{r}
+# Check the numeric variables again
+numeric_variable <- dplyr::select_if(all, is.numeric)
+length(numeric_variable)
+
+# Create a dataframe with all high correlation variables
+model_variable <- all[, corr_high]
+
+# Split the above dataframe into two different dataframes. One has SalePrice values as train dataset. One has null SalePrice values as test dataset.
+model_test <- subset(model_variable, is.na(model_variable$SalePrice))
+model_train <- subset(model_variable, !is.na(model_variable$SalePrice))
+```
+
+```{r}
+# check NAs columns 
+NAcolumn <- sort(colSums(sapply(all[NAcolumn], is.na)), decreasing = TRUE)
+
+# Miscellaneous Feature
+# As the values are not ordinal, convert it into factor
+all$MiscFeature[is.na(all$MiscFeature)] <- 'None'
+all$MiscFeature <- as.factor(all$MiscFeature)
+table(all$MiscFeature)
+
+# Alley
+# As the values are not ordinal, convert it into factor
+all$Alley[is.na(all$Alley)] <- 'None'
+all$Alley <- as.factor(all$Alley)
+table(all$Alley)
+
+# Fence
+# As the values are not ordinal, convert it into factor
+all$Fence[is.na(all$Fence)] <- 'None'
+all$Fence <- as.factor(all$Fence)
+table(all$Fence)
+
+# FireplaceQu
+# Use revalue to replace the quality levels with the ordinal integers
+all$FireplaceQu[is.na(all$FireplaceQu)] <- 'None'
+all$FireplaceQu<- as.integer(revalue(all$FireplaceQu, Qualities))
+table(all$FireplaceQu)
+
+# # LotFrontage
+# # As the values are not ordinal, convert it into factor
+for (i in 1:nrow(all)){
+        if(is.na(all$LotFrontage[i])){
+               all$LotFrontage[i] <- as.integer(median(all$LotFrontage[all$Neighborhood==all$Neighborhood[i]], na.rm=TRUE))
+        }
+}
+table(all$LotFrontage)
+
+# GarageYrBlt
+# Year garage build should be the same year of house built 
+all$GarageYrBlt[is.na(all$GarageYrBlt)] <- all$YearBuilt[is.na(all$GarageYrBlt)]
+table(all$GarageYrBlt)
+
+# GarageQual
+# Use revalue to replace the quality levels with the ordinal integers
+all$GarageQual[is.na(all$GarageQual)] <- 'None'
+Qualities2 <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$GarageQual<- as.integer(revalue(all$GarageQual, Qualities2))
+table(all$GarageQual)
+
+# GarageFinish
+# values are ordinal
+all$GarageFinish[is.na(all$GarageFinish)] <- 'None'
+Finish <- c('None' = 0, 'Unf' = 1, 'RFn' = 2, 'Fin' = 3)
+all$GarageFinish <- as.integer(revalue(all$GarageFinish, Finish))
+table(all$GarageFinish)
+
+# GarageCond
+# values are ordinal
+all$GarageCond[is.na(all$GarageCond)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$GarageCond < -as.integer(revalue(all$GarageCond, QC))
+table(all$GarageCond)
+
+# GarageType
+# values are not ordinal
+all$GarageType[is.na(all$GarageType)] <- 'No Garage'
+all$GarageType <- as.factor(all$GarageType)
+table(all$GarageType)
+
+# BsmtCond
+# values are ordinal
+all$BsmtCond[is.na(all$BsmtCond)] <- 'None'
+all$BsmtCond<-as.integer(revalue(all$BsmtCond, Qualities2))
+table(all$BsmtCond)
+
+# BsmtExposure
+# values are ordinal
+all$BsmtExposure[is.na(all$BsmtExposure)] <- 'None'
+Exposure <- c('None' = 0, 'No' = 1, 'Mn' = 2, 'Av' = 3, 'Gd' = 4)
+all$BsmtExposure<-as.integer(revalue(all$BsmtExposure, Exposure))
+table(all$BsmtExposure)
+
+# BsmtQual
+# values are ordinal
+all$BsmtQual[is.na(all$BsmtQual)] <- 'None'
+all$BsmtQual <- as.integer(revalue(all$BsmtQual, Qualities))
+table(all$BsmtQual)
+
+# BsmtFinType1
+# values are ordinal
+all$BsmtFinType1[is.na(all$BsmtFinType1)] <- 'None'
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+all$BsmtFinType1<-as.integer(revalue(all$BsmtFinType1, FinType))
+table(all$BsmtFinType1)
+
+# BsmtFinType2
+# values are ordinal
+all$BsmtFinType2[is.na(all$BsmtFinType2)] <- 'None'
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+all$BsmtFinType2 <- as.integer(revalue(all$BsmtFinType2, FinType))
+table(all$BsmtFinType2)
+
+# FireplaceQu
+# values are ordinal
+all$FireplaceQu[is.na(all$FireplaceQu)] <- 'None'
+all$FireplaceQu<-as.integer(revalue(all$FireplaceQu, Qualities))
+table(all$FireplaceQu)
+
+# MasVnrType
+# values are ordinal
+all$MasVnrType[is.na(all$MasVnrType)] <- 'None'
+Masonry <- c('None'=0, 'BrkCmn'=0, 'BrkFace'=1, 'Stone'=2)
+all$MasVnrType<-as.integer(revalue(all$MasVnrType, Masonry))
+table(all$MasVnrType)
+
+# BsmtCond
+# values are ordinal
+all$BsmtCond[is.na(all$BsmtCond)] <- 'None'
+all$BsmtCond<-as.integer(revalue(all$BsmtCond, Qualities))
+table(all$BsmtCond)
+
+# MasVnrArea
+all$MasVnrArea[is.na(all$MasVnrArea)] <- 0
+
+# MSZoning
+all$MSZoning[is.na(all$MSZoning)] <- 'None'
+all$MSZoning <- as.factor(all$MSZoning)
+
+# Utilities
+all$Utilities[is.na(all$Utilities)] <- 'None'
+all$Utilities <- as.factor(all$Utilities)
+
+# BsmtFullBath
+all$BsmtFullBath[is.na(all$BsmtFullBath)] <- 0
+
+# BsmtHalfBath
+all$BsmtHalfBath[is.na(all$BsmtHalfBath)] <- 0
+
+# Functional
+all$Functional[is.na(all$Functional)] <- 'None'
+all$Functional <- as.factor(all$Functional)
+
+# Exterior1st
+all$Exterior1st[is.na(all$Exterior1st)] <- 'None'
+all$Exterior1st <- as.factor(all$Exterior1st)
+
+# Exterior2nd
+all$Exterior2nd[is.na(all$Exterior2nd)] <- 'None'
+all$Exterior2nd <- as.factor(all$Exterior2nd)
+
+# BsmtFinSF1 
+all$BsmtFinSF1[is.na(all$BsmtFinSF1)] <- 0
+
+# BsmtFinSF2
+all$BsmtFinSF2[is.na(all$BsmtFinSF2)] <- 0
+
+# BsmtUnfSF
+all$BsmtUnfSF[is.na(all$BsmtUnfSF)] <- 0
+
+# Electrical
+all$Electrical[is.na(all$Electrical)] <- 'None'
+all$Electrical <- as.factor(all$Electrical)
+
+# KitchenQual
+all$KitchenQual[is.na(all$KitchenQual)] <- 'None'
+all$KitchenQual<-as.integer(revalue(all$KitchenQual, Qualities))
+table(all$KitchenQual)
+
+# SaleType  
+all$SaleType[is.na(all$SaleType)] <- 'None'
+all$SaleType <- as.factor(all$SaleType)
+```
+
+
+```{r}
+# There are 21 remaining columns with character values
+categorical_variable <- names(all[,sapply(all, is.character)])
+length(categorical_variable)
+
+# street
+all$Street <- as.integer(revalue(all$Street, c('Grvl' = 0, 'Pave' = 1)))
+table(all$Street)
+
+# LotShape
+all$LotShape <- as.factor(all$LotShape)
+table(all$LotShape)
+
+# LandContour
+all$LandContour <- as.factor(all$LandContour)
+table(all$LandContour)
+
+# LotConfig
+all$LotConfig <- as.factor(all$LotConfig)
+table(all$LotConfig)
+
+# LandSlope
+all$LandSlope <- as.factor(all$LandSlope)
+table(all$LandSlope)
+
+# Neighborhood
+all$LandSlope <- as.factor(all$LandSlope)
+table(all$LandSlope)
+
+# Condition1
+all$Condition1 <- as.factor(all$Condition1)
+table(all$Condition1)
+
+# Condition2
+all$Condition2 <- as.factor(all$Condition2)
+table(all$Condition2)
+
+# BldgType
+all$BldgType <- as.factor(all$BldgType)
+table(all$BldgType)
+
+# HouseStyle
+all$HouseStyle <- as.factor(all$HouseStyle)
+table(all$HouseStyle)
+
+# RoofStyle
+all$RoofStyle <- as.factor(all$RoofStyle)
+table(all$RoofStyle)
+
+# RoofMatl
+all$RoofMatl <- as.factor(all$RoofMatl)
+table(all$RoofMatl)
+
+# Exterior1st
+all$Exterior1st <- as.factor(all$Exterior1st)
+table(all$Exterior1st)
+
+# ExterQual
+all$ExterQual <- as.integer(revalue(all$ExterQual, Qualities))
+table(all$ExterQual)
+
+# ExterCond
+all$ExterCond[is.na(all$ExterCond)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$ExterCond <- as.integer(revalue(all$ExterCond, QC))
+table(all$ExterCond)
+
+# Foundation
+all$Foundation <- as.factor(all$Foundation)
+table(all$Foundation)
+
+# Heating
+all$Heating <- as.factor(all$Heating)
+table(all$Heating)
+
+# HeatingQC
+all$HeatingQC[is.na(all$HeatingQC)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$HeatingQC <- as.integer(revalue(all$HeatingQC, QC))
+table(all$HeatingQC)
+
+# CentralAir
+all$CentralAir <- as.integer(revalue(all$CentralAir, c('N' = 0, 'Y' = 1)))
+table(all$CentralAir)
+
+# GarageCond
+all$GarageCond[is.na(all$GarageCond)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$GarageCond <- as.integer(revalue(all$GarageCond, QC))
+table(all$GarageCond)
+
+# PavedDrive
+all$PavedDrive <- as.integer(revalue(all$PavedDrive, c('N' = 0, 'P' = 2, 'Y' = 1)))
+table(all$PavedDrive)
+
+# SaleCondition
+Condition <- c('Abnorml' = 0,
+               'AdjLand' = 1, 
+               'Alloca' = 2, 
+               'Family' = 3, 
+               'Partial'= 4, 
+               'Normal'= 5)
+all$SaleCondition <- as.integer(revalue(all$SaleCondition, Condition))
+table(all$SaleCondition)
+```
+
+```{r}
+# validated again. all character variables have been converted into factor or integer
+Charcol <- names(all[,sapply(all, is.character)])
+
+# store numeric and categoricl variables in a vector
+numeric_variable <- dplyr::select_if(all, is.numeric)
+factor_variable <- dplyr::select_if(all, is.factor)
+
+all_test <- subset(all, is.na(model_variable$SalePrice))
+all_train <- subset(all, !is.na(model_variable$SalePrice))
+```
+
+```{r}
+# pairwise.complete.obs uses the non-NA values when calculating the correlation
+correlation_numeric_variable <- cor(numeric_variable, use = "pairwise.complete.obs")
+
+# arrange correlations with SalePrice in descending order 
+corr_sorted <- as.matrix(sort(correlation_numeric_variable[, 'SalePrice'], decreasing = TRUE))
+
+#select only high correlations with SalePrice(correlation > 0.5)
+corr_high <- names(which(apply(corr_sorted, 1, function(x) abs(x) > 0.5)))
+
+# keep top 12 correlation numeric variables
+correlation_numeric_variable <- correlation_numeric_variable[corr_high, corr_high]
+
+# create correlogram
+# https://stackoverflow.com/questions/43220298/how-do-i-change-the-color-font-type-and-size-of-a-corrplot
+# https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+corrplot(correlation_numeric_variable, method = 'circle', tl.col = "black", 
+         col=colorRampPalette(c("white","#ced3cd", "#3c696f"))(100),
+         cl.lim=c(0,1), tl.cex=0.8)
+```
+
+```{r}
+# Create a dataframe with all high correlation variables again
+model_variable <- all[, corr_high]
+
+# Split the above dataframe into two different dataframes. One has SalePrice values as train dataset. One has null SalePrice values as test dataset.
+model_test <- subset(model_variable, is.na(model_variable$SalePrice))
+model_train <- subset(model_variable, !is.na(model_variable$SalePrice))
+```
+
+
+```{r}
+# Linear Regression
+# c("SalePrice","OverallQual","GrLivArea","GarageCars","GarageArea","TotalBsmtSF","X1stFlrSF","FullBath","TotRmsAbvGrd","YearBuilt","YearRemodAdd") will be used in linear regression.
+names(model_train)
+summary(model_train)
+
+# partition data
+# divide datasets into two parts -- training and validation, to prepare for prediction later
+set.seed(10000)
+train.index <- sample(c(1:dim(model_train)[1]), dim(model_train)[1]*0.8)
+model_train2 = model_train[train.index,]
+model_valid <- model_train[-train.index,]
+
+Regression = lm(SalePrice ~ ., data = model_train2)
+ summary(Regression)
+ 
+```
+
+```{r}
+# Run the linear regression model without TotRmsAbvGrd, GarageArea,X1stFlrSF   
+
+ Regression = lm(SalePrice ~ .-TotRmsAbvGrd - TotalBsmtSF - GarageArea- GarageFinish -YearRemodAdd , data = model_train2)
+ summary(Regression)
+ 
+ plot(Regression)
+```
+```{r}
+pred <- predict(Regression,model_valid,type='response')
+# see error metrics 
+rmse(model_valid$SalePrice, pred)
+
+residuals <- model_valid$SalePrice - pred
+reg_pred <- data.frame("Predicted" = pred, "Actual" = model_valid$SalePrice, "Residual" = residuals)
+
+accuracy(pred, model_valid$SalePrice)
+accuracy(log(pred), log(model_valid$SalePrice))
+```
+
+```{r}
+ggplot(data = reg_pred, aes(x = Actual, y = Predicted), color = "blue") + 
+  geom_point(col='#3c696f',size = 2 ) +
+  geom_abline(size=3,alpha = 0.2)+
+  theme_classic()
+
+ggplot(data = reg_pred, aes(x = Predicted, y = Residual)) +
+  geom_pointrange(aes(ymin = 0, ymax = Residual), color = "blue", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = 3, color = "red") +
+  ggtitle("Residuals vs. Linear model prediction")
+
+```
+
+```{r}
+
+qqnorm(model_train2$SalePrice)
+qqline(model_train2$SalePrice)
+qqnorm(log(model_train2$SalePrice))
+qqline(log(model_train2$SalePrice))
+```
+
+```{r}
+# partition data
+# divide datasets into two parts -- training and validation, to prepare for prediction later
+set.seed(10000)
+train.index <- sample(c(1:dim(model_train)[1]), dim(model_train)[1]*0.8)
+model_train2 = model_train[train.index,]
+model_valid <- model_train[-train.index,]
+
+
+RegressionL = lm(log(SalePrice) ~ ., data = model_train2)
+ summary(RegressionL)
+
+# Run the linear regression model without TotRmsAbvGrd, GarageArea,X1stFlrSF   
+ RegressionL = lm(log(SalePrice) ~ . -TotRmsAbvGrd - GarageArea - X1stFlrSF   , data = model_train2)
+ summary(RegressionL)
+ 
+ plot(RegressionL)
+
+predL <- exp(predict(RegressionL,model_valid,type='response'))
+# see error metrics 
+rmse(model_valid$SalePrice, predL)
+
+residualsL <- model_valid$SalePrice - predL
+reg_predL <- data.frame("PredictedL" = predL, "Actual" = model_valid$SalePrice, "ResidualL" = residualsL)
+
+accuracy(predL, model_valid$SalePrice)
+accuracy(log(predL), log(model_valid$SalePrice))
+
+reg<- reg_pred %>% left_join(reg_predL, by = 'Actual')
+
+ggplot(data = reg) + 
+  geom_point(aes(x = Actual, y = PredictedL), col='#3c696f',size = 3 ) +
+  geom_point(aes(x = Actual, y = Predicted), col = "#c2c2ff",size = 3) +
+  geom_abline(size=3,alpha = 0.2)+ 
+  theme_classic()+
+  xlim(0,450000)+
+  ylim(0,450000)+theme(aspect.ratio=1)
+
+legend_colors <- c("linear" = "#c2c2ff", "Log linear" = "#3c696f")
+
+ggplot(data = reg) +
+  geom_pointrange(aes(x = Predicted, y = Residual, ymin = 0, ymax = Residual), color = "#c2c2ff", alpha = 0.7) +
+  geom_pointrange(aes(x = PredictedL, y = Residual, ymin = 0, ymax = Residual), color = "#3c696f", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = 3, color = "red") +
+  ggtitle("Residuals vs. Linear model prediction")+
+  theme_classic()+
+  guides(color=guide_legend(ncol=2))
+
+
+# model_test$ModelPred <- exp(predict(RegressionL,model_test,type='response'))
+
+
+
+
+```
+
+```{r}
+
+model_data <- model_train
+# Split the above dataframe into two different dataframes. 
+set.seed(10000)
+
+train.index <- sample(c(1:dim(model_data)[1]), dim(model_data)[1]*0.8)
+data_train = model_data[train.index,]
+data_valid <- model_data[-train.index,]
+data_train
+data_valid
+
+# set.seed(123)
+# data_split <- initial_split(model_data, prop = 0.8, strata = "SalePrice")
+# data_train <- training(data_split)
+# data_valid  <- testing(data_split)
+
+
+
+# Models
+# CART, Random Forest
+
+
+```
+
+```{r}
+# classification tree
+
+# add log saleprice
+data_train$lSalePrice <- log(data_train$SalePrice)
+data_valid$lSalePrice <- log(data_valid$SalePrice)
+
+library(rpart)
+library(rpart.plot)
+
+# model ct
+ct_model <- rpart(lSalePrice ~.-SalePrice,
+                    data = data_train,control = rpart.control(cp = 0.01))
+plotcp(ct_model)
+printcp(ct_model)
+
+# plot tree
+rpart.plot(ct_model,
+           box.palette="GnBu",
+           branch.lty=3, shadow.col="gray", nn=TRUE)
+
+# compute accuracy
+ct.pred <- predict(ct_model, newdata = data_valid )
+residuals <- data_valid$lSalePrice - ct.pred
+ct_pred <- data.frame("Predicted" = exp(ct.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+ct_pred
+accuracy(ct.pred, data_valid$lSalePrice)
+accuracy(exp(ct.pred), data_valid$SalePrice)
+
+# plot Predicted vs. Actual log SalePrice
+plot(ct.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice")
+abline(0,1)
+
+ggplot(data_valid, aes(x=ct.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+```
+
+```{r}
+# random forest
+# add log saleprice
+data_train$lSalePrice <- log(data_train$SalePrice)
+data_valid$lSalePrice <- log(data_valid$SalePrice)
+rf_model <- randomForest(lSalePrice ~.-SalePrice, data = data_train, 
+                   importance =TRUE,ntree=500,nodesize=7, na.action=na.roughfix)
+# variable importance
+options(repr.plot.width=9, repr.plot.height=6)
+imp <- varImpPlot(rf_model, type=1)
+imp
+
+# this part just creates the data.frame for the plot part
+imp <- as.data.frame(imp)
+imp$varnames <- rownames(imp) # row names to column
+rownames(imp) <- NULL  
+# this is the plot part, be sure to use reorder with the correct measure name
+ggplot(imp, aes(x = `%IncMSE`, y =varnames)) +
+  geom_bar(stat="identity", fill = "#637756", color="#e9ecef", alpha =0.9) +
+  theme_minimal() + 
+    xlab('%IncMSE') + 
+    ylab('Variables')
+
+#prediction
+rf.pred <- predict(rf_model, newdata=data_valid )
+residuals <- data_valid$lSalePrice - rf.pred
+rf_pred <- data.frame("Predicted" = exp(rf.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+rf_pred
+accuracy(rf.pred, data_valid$lSalePrice)
+accuracy(exp(rf.pred), data_valid$SalePrice)
+plot(rf.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice") 
+abline(0,1)
+ggplot(data_valid, aes(x=rf.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+```
+
+
+```{r}
+# Multiple Linear Regression
+
+# linearP <- read.csv('linearP.csv')
+# 
+# mlr.pred <- log(linearP$loglinear)
+
+mlr.pred <- log(predL)
+
+
+```
+
+
+```{r}
+# Ensemble Average
+
+avg.pred <- (mlr.pred + rf.pred)/2
+avg.pred
+
+# compute accuracy
+residuals <- data_valid$lSalePrice - avg.pred
+avg_pred <- data.frame("Predicted" = exp(avg.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+avg_pred
+accuracy(avg.pred, data_valid$lSalePrice)
+accuracy(exp(avg.pred), data_valid$SalePrice)
+
+# plot Predicted vs. Actual log SalePrice
+plot(avg.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice")
+abline(0,1)
+
+ggplot(data_valid, aes(x=avg.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+
+```
+
+```{r}
+# predict on test data and take average
+
+test_mlr <- exp(predict(RegressionL, model_test))
+
+test_rf <- exp(predict(rf_model, model_test))
+
+avg_price <- rowMeans(data.frame(test_mlr, test_rf))
+model_test$SalePrice <- avg_price
+
+
+
+```
+
+
+```{r}
+# write it to submission.csv
+
+submission <- cbind(Id = rownames(model_test),SalePrice = model_test$SalePrice)
+colnames(submission) <- c("Id","SalePrice")
+
+write.csv(submission,file="submission.csv",row.names=FALSE)
+
+
+
+```
+

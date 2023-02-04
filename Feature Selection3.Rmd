@@ -1,0 +1,488 @@
+```{r}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+library(rpart)
+library(rpart.plot)
+library(purrr)
+
+```
+
+
+```{r}
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+
+# Remove the Id column from both test and train datasets
+test$Id <- NULL
+train$Id <- NULL
+
+# Create a SalePrice column into the test dataset with value NA
+test$SalePrice <- NA
+
+# Combine train and test datasets by rows
+all <- rbind(train, test)
+dim(all)
+```
+
+```{r}
+# Return column names and its corresponding index numbers if there are missing values
+NAcolumn <- which(colSums(is.na(all)) > 0)
+
+# arrange the columns in descending order
+NAcolumn_desc <- sort(colSums(sapply(all[NAcolumn], is.na)), decreasing = TRUE)
+
+
+```
+
+```{r}
+# Visualize the target variable SalePrice 
+ggplot(all, aes(x = SalePrice)) +
+  geom_histogram(fill = "#7d926e", color="#e9ecef",
+                 alpha = 0.9) +
+  theme_classic() + xlab("Sale Price") + ylab("Count")
+  scale_x_continuous(breaks = seq(0, 800000, by = 100000 ))
+
+```
+
+```{r}
+# extract numeric variables 
+numeric_variable <- dplyr::select_if(all, is.numeric)
+
+# Store the numeric column names in a vector. It will be used later on
+numeric_veriable_names <- colnames(numeric_variable)
+
+length(numeric_variable)
+```
+
+```{r}
+# pairwise.complete.obs uses the non-NA values when calculating the correlation
+correlation_numeric_variable <- cor(numeric_variable, use = "pairwise.complete.obs")
+
+# arrange correlations with SalePrice in descending order 
+corr_sorted <- as.matrix(sort(correlation_numeric_variable[, 'SalePrice'], decreasing = TRUE))
+
+#select only high correlations with SalePrice(correlation > 0.5)
+corr_high <- names(which(apply(corr_sorted, 1, function(x) abs(x) > 0.5)))
+
+# keep top 10 correlation numeric variables
+correlation_numeric_variable <- correlation_numeric_variable[corr_high, corr_high]
+
+# create correlogram
+# https://stackoverflow.com/questions/43220298/how-do-i-change-the-color-font-type-and-size-of-a-corrplot
+# https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+corrplot(correlation_numeric_variable, method = 'circle', tl.col = "black", 
+         col=colorRampPalette(c("white","#ced3cd", "#3c696f"))(100),
+         cl.lim=c(0,1), tl.cex=0.8)
+
+```
+
+```{r}
+# Overall quality has the highest correlation with SalePrice
+ggplot(all[!is.na(all$SalePrice),], aes(factor(OverallQual), SalePrice)) +
+  geom_boxplot(col = "#7d926e") +
+  theme_classic() + xlab("Overall Quality") + ylab("Sale Price")
+  scale_y_continuous(breaks= seq(0, 800000, by=100000))
+```
+
+```{r}
+# GrLivArea has the second highest correlation with SalePrice
+ggplot(all[!is.na(all$SalePrice), ], aes(x = GrLivArea, y = SalePrice)) +
+  geom_point(col="#7d926e") + 
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  theme_classic() + xlab("Ground Living Area") + ylab("Sale Price") +
+  scale_y_continuous(breaks = seq(0, 800000, by = 100000)) +
+  geom_text_repel(aes(label = 
+                        ifelse(all$GrLivArea[!is.na(all$SalePrice)] > 4500, 
+                               rownames(all), '')))
+```
+
+```{r}
+# Among 10 numeric variables above, the following three variables have NAs. We need to remove NAs before proceeding to the next step.  
+NAcolumn["GarageCars"]
+NAcolumn["GarageArea"]
+NAcolumn["TotalBsmtSF"]
+
+# according to the previous chart, the following two rows are ourliers which need to be removed later on  
+all[c(524, 1299), c("SalePrice", "OverallQual", "GrLivArea")]
+
+```
+
+```{r}
+NAcolumn["GarageCars"]
+NAcolumn["GarageArea"]
+NAcolumn["TotalBsmtSF"]
+
+# GarageCars: convert NAs into 0
+all$GarageCars[is.na(all$GarageCars)] <- 0
+# Validation
+all %>% filter(is.na(GarageCars))
+
+# GarageArea: convert NAs into 0
+all$GarageArea[is.na(all$GarageArea)] <- 0
+# Validation
+all %>% filter(is.na(GarageArea))
+
+# TotalBsmtSF: convert NAs into 0
+all$TotalBsmtSF[is.na(all$TotalBsmtSF)] <- 0
+# Validation
+all %>% filter(is.na(TotalBsmtSF))
+```
+
+```{r}
+# since PoolQC variable is categorical, we convert missing values into text "None"
+all$PoolQC[is.na(all$PoolQC)] <- "None"
+unique(all$PoolQC)
+
+# We can label this variable as ordinal since it values use the quality levels.
+Qualities <- c("None" = 0, "Fa" = 1, "TA" = 2, "Gd" = 3, "Ex" = 4)
+# Use revalue to replace the quality levels with the ordinal numbers above
+all$PoolQC <- as.integer(revalue(all$PoolQC, Qualities))
+table(all$PoolQC)
+```
+
+```{r}
+# Check the numeric variables again
+numeric_variable <- dplyr::select_if(all, is.numeric)
+length(numeric_variable)
+
+# Create a dataframe with all high correlation variables
+model_variable <- all[, corr_high]
+
+# Split the above dataframe into two different dataframes. One has SalePrice values as train dataset. One has null SalePrice values as test dataset.
+model_test <- subset(model_variable, is.na(model_variable$SalePrice))
+model_train <- subset(model_variable, !is.na(model_variable$SalePrice))
+```
+
+```{r}
+# check NAs columns 
+NAcolumn <- sort(colSums(sapply(all[NAcolumn], is.na)), decreasing = TRUE)
+
+# Miscellaneous Feature
+# As the values are not ordinal, convert it into factor
+all$MiscFeature[is.na(all$MiscFeature)] <- 'None'
+all$MiscFeature <- as.factor(all$MiscFeature)
+table(all$MiscFeature)
+
+# Alley
+# As the values are not ordinal, convert it into factor
+all$Alley[is.na(all$Alley)] <- 'None'
+all$Alley <- as.factor(all$Alley)
+table(all$Alley)
+
+# Fence
+# As the values are not ordinal, convert it into factor
+all$Fence[is.na(all$Fence)] <- 'None'
+all$Fence <- as.factor(all$Fence)
+table(all$Fence)
+
+# FireplaceQu
+# Use revalue to replace the quality levels with the ordinal integers
+all$FireplaceQu[is.na(all$FireplaceQu)] <- 'None'
+all$FireplaceQu<- as.integer(revalue(all$FireplaceQu, Qualities))
+table(all$FireplaceQu)
+
+# # LotFrontage
+# # As the values are not ordinal, convert it into factor
+for (i in 1:nrow(all)){
+        if(is.na(all$LotFrontage[i])){
+               all$LotFrontage[i] <- as.integer(median(all$LotFrontage[all$Neighborhood==all$Neighborhood[i]], na.rm=TRUE))
+        }
+}
+table(all$LotFrontage)
+
+# GarageYrBlt
+# Year garage build should be the same year of house built 
+all$GarageYrBlt[is.na(all$GarageYrBlt)] <- all$YearBuilt[is.na(all$GarageYrBlt)]
+table(all$GarageYrBlt)
+
+# GarageQual
+# Use revalue to replace the quality levels with the ordinal integers
+all$GarageQual[is.na(all$GarageQual)] <- 'None'
+Qualities2 <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$GarageQual<- as.integer(revalue(all$GarageQual, Qualities2))
+table(all$GarageQual)
+
+# GarageFinish
+# values are ordinal
+all$GarageFinish[is.na(all$GarageFinish)] <- 'None'
+Finish <- c('None' = 0, 'Unf' = 1, 'RFn' = 2, 'Fin' = 3)
+all$GarageFinish <- as.integer(revalue(all$GarageFinish, Finish))
+table(all$GarageFinish)
+
+# GarageCond
+# values are ordinal
+all$GarageCond[is.na(all$GarageCond)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$GarageCond < -as.integer(revalue(all$GarageCond, QC))
+table(all$GarageCond)
+
+# GarageType
+# values are not ordinal
+all$GarageType[is.na(all$GarageType)] <- 'No Garage'
+all$GarageType <- as.factor(all$GarageType)
+table(all$GarageType)
+
+# BsmtCond
+# values are ordinal
+all$BsmtCond[is.na(all$BsmtCond)] <- 'None'
+all$BsmtCond<-as.integer(revalue(all$BsmtCond, Qualities2))
+table(all$BsmtCond)
+
+# BsmtExposure
+# values are ordinal
+all$BsmtExposure[is.na(all$BsmtExposure)] <- 'None'
+Exposure <- c('None' = 0, 'No' = 1, 'Mn' = 2, 'Av' = 3, 'Gd' = 4)
+all$BsmtExposure<-as.integer(revalue(all$BsmtExposure, Exposure))
+table(all$BsmtExposure)
+
+# BsmtQual
+# values are ordinal
+all$BsmtQual[is.na(all$BsmtQual)] <- 'None'
+all$BsmtQual <- as.integer(revalue(all$BsmtQual, Qualities))
+table(all$BsmtQual)
+
+# BsmtFinType1
+# values are ordinal
+all$BsmtFinType1[is.na(all$BsmtFinType1)] <- 'None'
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+all$BsmtFinType1<-as.integer(revalue(all$BsmtFinType1, FinType))
+table(all$BsmtFinType1)
+
+# BsmtFinType2
+# values are ordinal
+all$BsmtFinType2[is.na(all$BsmtFinType2)] <- 'None'
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+all$BsmtFinType2 <- as.integer(revalue(all$BsmtFinType2, FinType))
+table(all$BsmtFinType2)
+
+# FireplaceQu
+# values are ordinal
+all$FireplaceQu[is.na(all$FireplaceQu)] <- 'None'
+all$FireplaceQu<-as.integer(revalue(all$FireplaceQu, Qualities))
+table(all$FireplaceQu)
+
+# MasVnrType
+# values are ordinal
+all$MasVnrType[is.na(all$MasVnrType)] <- 'None'
+Masonry <- c('None'=0, 'BrkCmn'=0, 'BrkFace'=1, 'Stone'=2)
+all$MasVnrType<-as.integer(revalue(all$MasVnrType, Masonry))
+table(all$MasVnrType)
+
+# BsmtCond
+# values are ordinal
+all$BsmtCond[is.na(all$BsmtCond)] <- 'None'
+all$BsmtCond<-as.integer(revalue(all$BsmtCond, Qualities))
+table(all$BsmtCond)
+
+# MasVnrArea
+all$MasVnrArea[is.na(all$MasVnrArea)] <- 0
+
+# MSZoning
+all$MSZoning[is.na(all$MSZoning)] <- 'None'
+all$MSZoning <- as.factor(all$MSZoning)
+
+# Utilities
+all$Utilities[is.na(all$Utilities)] <- 'None'
+all$Utilities <- as.factor(all$Utilities)
+
+# BsmtFullBath
+all$BsmtFullBath[is.na(all$BsmtFullBath)] <- 0
+
+# BsmtHalfBath
+all$BsmtHalfBath[is.na(all$BsmtHalfBath)] <- 0
+
+# Functional
+all$Functional[is.na(all$Functional)] <- 'None'
+all$Functional <- as.factor(all$Functional)
+
+# Exterior1st
+all$Exterior1st[is.na(all$Exterior1st)] <- 'None'
+all$Exterior1st <- as.factor(all$Exterior1st)
+
+# Exterior2nd
+all$Exterior2nd[is.na(all$Exterior2nd)] <- 'None'
+all$Exterior2nd <- as.factor(all$Exterior2nd)
+
+# BsmtFinSF1 
+all$BsmtFinSF1[is.na(all$BsmtFinSF1)] <- 0
+
+# BsmtFinSF2
+all$BsmtFinSF2[is.na(all$BsmtFinSF2)] <- 0
+
+# BsmtUnfSF
+all$BsmtUnfSF[is.na(all$BsmtUnfSF)] <- 0
+
+# Electrical
+all$Electrical[is.na(all$Electrical)] <- 'None'
+all$Electrical <- as.factor(all$Electrical)
+
+# KitchenQual
+all$KitchenQual[is.na(all$KitchenQual)] <- 'None'
+all$KitchenQual<-as.integer(revalue(all$KitchenQual, Qualities))
+table(all$KitchenQual)
+
+# SaleType  
+all$SaleType[is.na(all$SaleType)] <- 'None'
+all$SaleType <- as.factor(all$SaleType)
+```
+
+
+```{r}
+# There are 21 remaining columns with character values
+categorical_variable <- names(all[,sapply(all, is.character)])
+length(categorical_variable)
+
+# street
+all$Street <- as.integer(revalue(all$Street, c('Grvl' = 0, 'Pave' = 1)))
+table(all$Street)
+
+# LotShape
+all$LotShape <- as.factor(all$LotShape)
+table(all$LotShape)
+
+# LandContour
+all$LandContour <- as.factor(all$LandContour)
+table(all$LandContour)
+
+# LotConfig
+all$LotConfig <- as.factor(all$LotConfig)
+table(all$LotConfig)
+
+# LandSlope
+all$LandSlope <- as.factor(all$LandSlope)
+table(all$LandSlope)
+
+# Neighborhood
+all$LandSlope <- as.factor(all$LandSlope)
+table(all$LandSlope)
+
+# Condition1
+all$Condition1 <- as.factor(all$Condition1)
+table(all$Condition1)
+
+# Condition2
+all$Condition2 <- as.factor(all$Condition2)
+table(all$Condition2)
+
+# BldgType
+all$BldgType <- as.factor(all$BldgType)
+table(all$BldgType)
+
+# HouseStyle
+all$HouseStyle <- as.factor(all$HouseStyle)
+table(all$HouseStyle)
+
+# RoofStyle
+all$RoofStyle <- as.factor(all$RoofStyle)
+table(all$RoofStyle)
+
+# RoofMatl
+all$RoofMatl <- as.factor(all$RoofMatl)
+table(all$RoofMatl)
+
+# Exterior1st
+all$Exterior1st <- as.factor(all$Exterior1st)
+table(all$Exterior1st)
+
+# ExterQual
+all$ExterQual <- as.integer(revalue(all$ExterQual, Qualities))
+table(all$ExterQual)
+
+# ExterCond
+all$ExterCond[is.na(all$ExterCond)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$ExterCond <- as.integer(revalue(all$ExterCond, QC))
+table(all$ExterCond)
+
+# Foundation
+all$Foundation <- as.factor(all$Foundation)
+table(all$Foundation)
+
+# Heating
+all$Heating <- as.factor(all$Heating)
+table(all$Heating)
+
+# HeatingQC
+all$HeatingQC[is.na(all$HeatingQC)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$HeatingQC <- as.integer(revalue(all$HeatingQC, QC))
+table(all$HeatingQC)
+
+# CentralAir
+all$CentralAir <- as.integer(revalue(all$CentralAir, c('N' = 0, 'Y' = 1)))
+table(all$CentralAir)
+
+# GarageCond
+all$GarageCond[is.na(all$GarageCond)] <- 'None'
+QC <- c("None" = 0, "Po" = 1, "Fa" = 2, "TA" = 3, "Gd" = 4, "Ex" = 5)
+all$GarageCond <- as.integer(revalue(all$GarageCond, QC))
+table(all$GarageCond)
+
+# PavedDrive
+all$PavedDrive <- as.integer(revalue(all$PavedDrive, c('N' = 0, 'P' = 2, 'Y' = 1)))
+table(all$PavedDrive)
+
+# SaleCondition
+Condition <- c('Abnorml' = 0,
+               'AdjLand' = 1, 
+               'Alloca' = 2, 
+               'Family' = 3, 
+               'Partial'= 4, 
+               'Normal'= 5)
+all$SaleCondition <- as.integer(revalue(all$SaleCondition, Condition))
+table(all$SaleCondition)
+```
+
+```{r}
+# validated again. all character variables have been converted into factor or integer
+Charcol <- names(all[,sapply(all, is.character)])
+
+# store numeric and categoricl variables in a vector
+numeric_variable <- dplyr::select_if(all, is.numeric)
+factor_variable <- dplyr::select_if(all, is.factor)
+
+all_test <- subset(all, is.na(model_variable$SalePrice))
+all_train <- subset(all, !is.na(model_variable$SalePrice))
+```
+
+```{r}
+# pairwise.complete.obs uses the non-NA values when calculating the correlation
+correlation_numeric_variable <- cor(numeric_variable, use = "pairwise.complete.obs")
+
+# arrange correlations with SalePrice in descending order 
+corr_sorted <- as.matrix(sort(correlation_numeric_variable[, 'SalePrice'], decreasing = TRUE))
+
+#select only high correlations with SalePrice(correlation > 0.5)
+corr_high <- names(which(apply(corr_sorted, 1, function(x) abs(x) > 0.5)))
+
+# keep top 12 correlation numeric variables
+correlation_numeric_variable <- correlation_numeric_variable[corr_high, corr_high]
+
+# create correlogram
+# https://stackoverflow.com/questions/43220298/how-do-i-change-the-color-font-type-and-size-of-a-corrplot
+# https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+corrplot(correlation_numeric_variable, method = 'circle', tl.col = "black", 
+         col=colorRampPalette(c("white","#ced3cd", "#3c696f"))(100),
+         cl.lim=c(0,1), tl.cex=0.8)
+```
+
+```{r}
+# Create a dataframe with all high correlation variables again
+model_variable <- all[, corr_high]
+
+# Split the above dataframe into two different dataframes. One has SalePrice values as train dataset. One has null SalePrice values as test dataset.
+model_test <- subset(model_variable, is.na(model_variable$SalePrice))
+model_train <- subset(model_variable, !is.na(model_variable$SalePrice))
+```
+

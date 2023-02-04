@@ -1,0 +1,373 @@
+---
+title: "Modelling"
+author: "Lingyun Ding"
+date: "2022-12-14"
+output: html_document
+---
+
+```{r}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(gridExtra)
+library(scales)
+library(Rmisc)
+library(ggrepel)
+library(randomForest)
+library(psych)
+library(xgboost)
+library(purrr)
+library(forecast)
+library(rsample)
+library(gbm)
+library(h2o)
+library(vip)
+library(pdp)
+library(e1071)
+library(rminer)
+library(Metrics)
+
+
+
+model_data <- model_train
+# Split the above dataframe into two different dataframes. 
+set.seed(10000)
+
+train.index <- sample(c(1:dim(model_data)[1]), dim(model_data)[1]*0.8)
+data_train = model_data[train.index,]
+data_valid <- model_data[-train.index,]
+data_train
+data_valid
+
+# set.seed(123)
+# data_split <- initial_split(model_data, prop = 0.8, strata = "SalePrice")
+# data_train <- training(data_split)
+# data_valid  <- testing(data_split)
+
+
+
+# Models
+# CART, Random Forest, XGBoost, Gradient Boosting, Adaboost, SVM
+
+
+```
+
+```{r}
+# classification tree
+
+# add log saleprice
+data_train$lSalePrice <- log(data_train$SalePrice)
+data_valid$lSalePrice <- log(data_valid$SalePrice)
+
+library(rpart)
+library(rpart.plot)
+
+# model ct
+ct_model <- rpart(lSalePrice ~.-SalePrice,
+                    data = data_train,control = rpart.control(cp = 0.01))
+plotcp(ct_model)
+printcp(ct_model)
+
+# plot tree
+rpart.plot(ct_model,
+           box.palette="GnBu",
+           branch.lty=3, shadow.col="gray", nn=TRUE)
+
+# compute accuracy
+ct.pred <- predict(ct_model, newdata = data_valid )
+residuals <- data_valid$lSalePrice - ct.pred
+ct_pred <- data.frame("Predicted" = exp(ct.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+ct_pred
+accuracy(ct.pred, data_valid$lSalePrice)
+accuracy(exp(ct.pred), data_valid$SalePrice)
+
+# plot Predicted vs. Actual log SalePrice
+plot(ct.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice")
+abline(0,1)
+
+ggplot(data_valid, aes(x=ct.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+```
+
+```{r}
+# random forest
+# add log saleprice
+data_train$lSalePrice <- log(data_train$SalePrice)
+data_valid$lSalePrice <- log(data_valid$SalePrice)
+rf_model <- randomForest(lSalePrice ~.-SalePrice, data = data_train, 
+                   importance =TRUE,ntree=500,nodesize=7, na.action=na.roughfix)
+# variable importance
+options(repr.plot.width=9, repr.plot.height=6)
+imp <- varImpPlot(rf_model, type=1)
+imp
+
+# this part just creates the data.frame for the plot part
+imp <- as.data.frame(imp)
+imp$varnames <- rownames(imp) # row names to column
+rownames(imp) <- NULL  
+# this is the plot part, be sure to use reorder with the correct measure name
+ggplot(imp, aes(x = `%IncMSE`, y =varnames)) +
+  geom_bar(stat="identity", fill = "#637756", color="#e9ecef", alpha =0.9) +
+  theme_minimal() + 
+    xlab('%IncMSE') + 
+    ylab('Variables')
+
+#prediction
+rf.pred <- predict(rf_model, newdata=data_valid )
+residuals <- data_valid$lSalePrice - rf.pred
+rf_pred <- data.frame("predicted" = exp(rf.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+rf_pred
+accuracy(rf.pred, data_valid$lSalePrice)
+accuracy(exp(rf.pred), data_valid$SalePrice)
+plot(rf.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice") 
+abline(0,1)
+ggplot(data_valid, aes(x=rf.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+
+
+```
+
+```{r}
+# XGBoost
+
+xgb_grid = expand.grid(
+nrounds = 1000,
+eta = c(0.1, 0.05, 0.01),
+max_depth = c(2, 3, 4, 5, 6),
+gamma = 0,
+colsample_bytree=1,
+min_child_weight=c(1, 2, 3, 4 ,5),
+subsample=1
+)
+
+
+label_train <- data_train$lSalePrice[!is.na(data_train$lSalePrice)]
+
+# put our testing & training data into two seperates Dmatrixs objects
+dtrain <- xgb.DMatrix(data = as.matrix(data_train), label= label_train)
+dtest <- xgb.DMatrix(data = as.matrix(data_valid))
+
+
+default_param<-list(
+        objective = "reg:linear",
+        booster = "gbtree",
+        eta=0.05, #default = 0.3
+        gamma=0,
+        max_depth=3, #default=6
+        min_child_weight=4, #default=1
+        subsample=1,
+        colsample_bytree=1
+)
+
+xgbcv <- xgb.cv( params = default_param, data = dtrain, nrounds = 500, nfold = 5, showsd = T, stratified = T, print_every_n = 40, early_stopping_rounds = 10, maximize = F)
+
+xgb_mod <- xgb.train(data = dtrain, params=default_param, nrounds = 454)
+
+XGB.pred <- predict(xgb_mod, dtest)
+predictions_XGB <- exp(XGB.pred) #need to reverse the log to the real values
+head(predictions_XGB)
+
+accuracy(XGB.pred, data_valid$lSalePrice)
+
+
+
+#view variable importance plot
+library(Ckmeans.1d.dp) #required for ggplot clustering
+mat <- xgb.importance (feature_names = colnames(data_train),model = xgb_mod)
+xgb.ggplot.importance(importance_matrix = mat[2:10], rel_to_first = TRUE)
+
+# sub_avg <- data.frame(Id = test_labels, SalePrice = (predictions_XGB+2*predictions_lasso)/3)
+# head(sub_avg)
+# 
+# write.csv(sub_avg, file = 'average.csv', row.names = F)
+
+
+ggplot(data_valid, aes(x=XGB.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+
+
+```
+
+
+
+```{r}
+# Gradient Boosting Machine
+# add log saleprice
+data_train$lSalePrice <- log(data_train$SalePrice)
+data_valid$lSalePrice <- log(data_valid$SalePrice)
+
+
+gbm_model <- gbm(
+  formula = lSalePrice ~ .-SalePrice,
+  distribution = "gaussian",
+  data = data_train,
+  n.trees = 5000,
+  interaction.depth = 5,
+  shrinkage = 0.01,
+  cv.folds = 5,
+  n.cores = NULL, # will use all cores by default
+  verbose = FALSE
+  )  
+
+print(gbm_model)
+
+gbm.pred <- predict(gbm_model,newdata = data_valid)
+gbm.pred
+
+
+
+
+# compute accuracy
+residuals <- data_valid$lSalePrice - gbm.pred
+gbm_pred <- data.frame("predicted" = exp(gbm.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+gbm_pred
+accuracy(gbm.pred, data_valid$lSalePrice)
+accuracy(exp(gbm.pred), data_valid$SalePrice)
+
+# plot Predicted vs. Actual log SalePrice
+plot(gbm.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice")
+abline(0,1)
+
+
+ggplot(data_valid, aes(x=gbm.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# SVM
+
+# add log saleprice
+data_train$lSalePrice <- log(data_train$SalePrice)
+data_valid$lSalePrice <- log(data_valid$SalePrice)
+
+svm_model<-svm(lSalePrice~.-SalePrice, data=data_train, cost = 3)
+svm_model
+svm.pred <- predict(svm_model,newdata = data_valid)
+svm.pred
+
+
+# compute accuracy
+residuals <- data_valid$lSalePrice - svm.pred
+svm_pred <- data.frame("predicted" = exp(svm.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+svm_pred
+accuracy(svm.pred, data_valid$lSalePrice)
+accuracy(exp(svm.pred), data_valid$SalePrice)
+
+# plot Predicted vs. Actual log SalePrice
+plot(svm.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice")
+abline(0,1)
+
+
+ggplot(data_valid, aes(x=svm.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+```
+
+
+
+```{r}
+# Multiple Linear Regression
+
+# linearP <- read.csv('linearP.csv')
+# 
+# mlr.pred <- log(linearP$loglinear)
+
+mlr.pred <- log(predL)
+
+
+```
+
+
+```{r}
+# Ensemble Average
+
+avg.pred <- (mlr.pred + rf.pred)/2
+avg.pred
+
+# compute accuracy
+residuals <- data_valid$lSalePrice - avg.pred
+avg_pred <- data.frame("predicted" = exp(avg.pred), "Actual" = exp(data_valid$lSalePrice), "Residual" = residuals)
+avg_pred
+accuracy(avg.pred, data_valid$lSalePrice)
+accuracy(exp(avg.pred), data_valid$SalePrice)
+
+# plot Predicted vs. Actual log SalePrice
+plot(avg.pred, data_valid$lSalePrice, main = "Predicted vs. Actual log SalePrice")
+abline(0,1)
+
+ggplot(data_valid, aes(x=avg.pred, y=lSalePrice)) +
+  geom_point(col="#637756") + 
+  geom_smooth(method = "lm", se=FALSE, color="red") +
+  theme_minimal() +
+  scale_y_continuous()
+
+
+
+
+```
+
+```{r}
+# predict on test data and take average
+
+test_ct <- exp(predict(ct_model, model_test))
+test_rf <- exp(predict(rf_model, model_test))
+test_xgb <- exp(predict(xgb_mod, xgb.DMatrix(data = as.matrix(model_test))))# !
+test_gbm <- exp(predict(gbm_model, model_test))
+test_svm <- exp(predict(svm_model, model_test))
+test_mlr <- exp(predict(RegressionL, model_test))
+avg_SalePrice <- rowMeans((data.frame(test_ct, test_mlr)))
+# avg_all <- rowMeans(data.frame(test_ct, test_rf, test_xgb, test_gbm, test_svm, test_mlr))
+model_test$SalePrice <- avg_SalePrice
+
+```
+
+
+```{r}
+# write it to submission.csv
+
+submission <- cbind(Id = rownames(model_test),SalePrice = model_test$SalePrice)
+colnames(submission) <- c("Id","SalePrice")
+
+write.csv(submission,file="submission.csv",row.names=FALSE)
+
+
+
+```
+

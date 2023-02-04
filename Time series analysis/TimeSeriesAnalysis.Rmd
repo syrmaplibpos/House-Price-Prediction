@@ -1,0 +1,141 @@
+---
+title: "Project-TimeSeries"
+author: "ZHENG ZHENG"
+date: "2022-12-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(tseries)
+library(forecast)
+library(fpp2)
+library(knitr)
+library(stringr)
+library(DT)
+library(fpp)
+library(lattice)
+library(lubridate)
+```
+
+```{r}
+
+salesprice <-read.csv('Data/Metro_median_sale_price_uc_sfrcondo_month.csv')
+listprice <-read.csv('Data/Metro_mlp_uc_sfrcondo_month.csv')
+  
+prep.ztbl <- function(atbl){
+  c.nondate = length(which(!str_detect(colnames(atbl), "^X")))
+  c.nondate
+  range.datecol = (c.nondate+1):length(colnames(atbl))
+  range.datecol
+  tbl = atbl %>% gather("Date", "Value", range.datecol)
+  tbl$Date <- tbl$Date %>%  str_replace('X', '') %>% ymd()
+  tbl
+}
+
+salesprice <- prep.ztbl(salesprice)
+listprice <-prep.ztbl(listprice)
+
+```
+
+```{r}
+
+citylist = c("Ames")
+  Sales.price.city = salesprice %>% subset(RegionName =="Ames, IA" & Date >= as.Date("2010-01-01"))
+
+  fig.dim = c(8, 6)
+  plot(Sales.price.city$Date, Sales.price.city$Value, col="#7d926e", type="l", lty=1, main= paste(city, "sale price per Sq Ft"), xlab="Year", ylab="Listing and sale price")
+  lines(Sales.price.city$Date, Sales.price.city$Value.y, col="Blue", type="l", lty=1)
+  legend("topleft", c( "sale price"), col ="Red", cex=.75, lty=1)+
+  theme_classic()
+```
+
+```{r}
+# test for stationarity using Dickey-Fuller Test
+adf.test(Sales.price.city[,'Value'], alternative = 'stationary')
+```
+
+```{r}
+fig.dim = c(8, 6)
+plot.ts(diff(Sales.price.city[,'Value'], differences = 1), main= paste(city, "sale price per Sq Ft-diff(1)"))
+fig.dim = c(8, 6)
+adf.test(diff(Sales.price.city[,'Value'], differences = 1), alternative = 'stationary')
+
+
+```
+
+
+```{r}
+# Plot ACF and PACF plots
+par(mar = c(5,5,5,5)) # set the margins
+
+acf(diff(Sales.price.city[,'Value'],diffrences = 1), main = 'ACF of Consumption Data', xlab = 'Year')
+
+pacf(diff(Sales.price.city[,'Value'],diffrences = 1), main = 'PACF of Consumption Data', xlab = 'Year')
+```
+
+```{r}
+# build ARIMA model
+fit1 = arima(Sales.price.city[,'Value'], c(0, 1, 1))
+fit1 
+
+# plot forecasts
+fit1 %>% forecast(h = 10) %>% autoplot() + theme(plot.title = element_text(hjust = 0.5))
+
+# build ARIMA model automatically
+fitARIMA = auto.arima(Sales.price.city[,'Value'], seasonal = TRUE)
+fitARIMA
+
+# plot forecasts
+fitARIMA %>% forecast(h = 6) %>% autoplot(color = "blue",fill = "green") + theme(plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values=c('green'))
+
+fitARIMA %>% forecast(h = 36) %>% autoplot() + theme(plot.title = element_text(hjust = 0.5))
+
+fitARIMA %>% forecast(h = 60) %>% autoplot() + theme(plot.title = element_text(hjust = 0.5))
+
+
+a=summary(fit1)
+a
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
