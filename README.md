@@ -60,7 +60,9 @@ Most people are willing to spend 200,000 for housing. Only small proportion of c
 Select only high correlation with Sale Price (correlation > 0.5) 
 
 ## Modeling
-Time Series Analysis, Multiple Linear Regression, CART, Modeling 4 Random Forest, Result & Evaluation
+Multiple Linear Regression, CART, Random Forest
+
+## Result & Evaluation
 
 ## References
 
